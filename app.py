@@ -15,12 +15,15 @@ def parse_pdf_bytes(file_bytes, filename):
 
 def load_docs(files):
     docs = {}
+    raw_bytes = {}
     for f in files or []:
-        docs[f.name] = parse_pdf_bytes(f.getvalue(), f.name)
-    return docs
+        data = f.getvalue()
+        docs[f.name] = parse_pdf_bytes(data, f.name)
+        raw_bytes[f.name] = data
+    return docs, raw_bytes
 
 
-def render_editable_docs(docs, section_label):
+def render_editable_docs(docs, raw_bytes, section_label):
     edited = {}
     for name, doc in docs.items():
         title = f"{name}  —  {doc['doc_type']}  —  Ref: {doc['reference_no'] or '?'}"
@@ -54,6 +57,8 @@ def render_editable_docs(docs, section_label):
                 },
             )
             edited[name] = edited_df.to_dict("records")
+            if st.checkbox("View original PDF", key=f"viewpdf_{section_label}_{name}"):
+                st.pdf(raw_bytes[name], height=600)
     return edited
 
 
@@ -72,18 +77,18 @@ st.caption(
 
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("1a. Supplier POs (sent by Cactoz)")
-    supplier_files = st.file_uploader(
-        "Upload one or more supplier PO PDFs", type=["pdf"], accept_multiple_files=True, key="supplier_upload"
-    )
-with col2:
-    st.subheader("1b. Customer signed quotes / customer POs")
+    st.subheader("1a. Customer signed quotes / customer POs")
     customer_files = st.file_uploader(
         "Upload one or more customer quote/PO PDFs", type=["pdf"], accept_multiple_files=True, key="customer_upload"
     )
+with col2:
+    st.subheader("1b. Supplier POs (sent from Cactoz to suppliers)")
+    supplier_files = st.file_uploader(
+        "Upload one or more supplier PO PDFs", type=["pdf"], accept_multiple_files=True, key="supplier_upload"
+    )
 
-supplier_docs = load_docs(supplier_files)
-customer_docs = load_docs(customer_files)
+customer_docs, customer_bytes = load_docs(customer_files)
+supplier_docs, supplier_bytes = load_docs(supplier_files)
 
 st.divider()
 st.subheader("2. Review & correct extracted line items")
@@ -91,34 +96,34 @@ st.caption(
     "Cactoz's own PO/quote template is parsed reliably. Customer POs come in many formats, so double-check "
     "these tables — edit any cell directly, or add/remove rows, before comparing."
 )
-tab1, tab2 = st.tabs(["Supplier POs", "Customer quotes / POs"])
+tab1, tab2 = st.tabs(["Customer quotes / POs", "Supplier POs"])
 with tab1:
-    if not supplier_docs:
-        st.info("Upload supplier PO PDFs above.")
-    edited_supplier_items = render_editable_docs(supplier_docs, "supplier") if supplier_docs else {}
-with tab2:
     if not customer_docs:
         st.info("Upload customer quote/PO PDFs above.")
-    edited_customer_items = render_editable_docs(customer_docs, "customer") if customer_docs else {}
+    edited_customer_items = render_editable_docs(customer_docs, customer_bytes, "customer") if customer_docs else {}
+with tab2:
+    if not supplier_docs:
+        st.info("Upload supplier PO PDFs above.")
+    edited_supplier_items = render_editable_docs(supplier_docs, supplier_bytes, "supplier") if supplier_docs else {}
 
 st.divider()
-st.subheader("3. Compare a supplier PO against a customer quote/PO")
+st.subheader("3. Compare a customer quote/PO against a supplier PO")
 
 if not supplier_docs or not customer_docs:
     st.info("Upload at least one document on each side to run a comparison.")
 else:
-    supplier_name = st.selectbox("Supplier PO", list(supplier_docs.keys()))
+    customer_name = st.selectbox("Customer quote / PO", list(customer_docs.keys()))
 
     scores = {
-        cname: doc_pair_score(edited_supplier_items[supplier_name], edited_customer_items[cname])
-        for cname in customer_docs
+        sname: doc_pair_score(edited_supplier_items[sname], edited_customer_items[customer_name])
+        for sname in supplier_docs
     }
-    customer_names = list(customer_docs.keys())
-    best_customer = max(scores, key=scores.get) if scores else None
-    default_idx = customer_names.index(best_customer) if best_customer in customer_names else 0
-    customer_name = st.selectbox(
-        "Customer quote / PO (best guess pre-selected based on item similarity)",
-        customer_names,
+    supplier_names = list(supplier_docs.keys())
+    best_supplier = max(scores, key=scores.get) if scores else None
+    default_idx = supplier_names.index(best_supplier) if best_supplier in supplier_names else 0
+    supplier_name = st.selectbox(
+        "Supplier PO (best guess pre-selected based on item similarity)",
+        supplier_names,
         index=default_idx,
         format_func=lambda n: f"{n}   —   match score {scores[n]:.0%}",
     )
@@ -140,19 +145,25 @@ else:
         for m in result["matched"]:
             s, c = m["supplier_item"], m["customer_item"]
             rows.append({
-                "Supplier item": s["description"],
-                "Supplier qty": s.get("qty"),
-                "Supplier unit price": s.get("unit_price"),
                 "Customer item": c["description"],
                 "Customer qty": c.get("qty"),
                 "Customer unit price": c.get("unit_price"),
+                "Supplier item": s["description"],
+                "Supplier qty": s.get("qty"),
+                "Supplier unit price": s.get("unit_price"),
                 "Qty match": "✅" if m["qty_match"] else "❌",
                 "Margin (sell − buy)": m["margin"],
                 "Margin OK": margin_icon(m["margin_flag"]),
                 "Similarity": m["similarity"],
             })
         result_df = pd.DataFrame(rows)
-        st.dataframe(result_df, width="stretch")
+        st.dataframe(
+            result_df,
+            width="stretch",
+            column_config={
+                "Customer item": st.column_config.TextColumn("Customer item", pinned=True),
+            },
+        )
         st.download_button(
             "Download comparison as CSV",
             result_df.to_csv(index=False).encode("utf-8"),
