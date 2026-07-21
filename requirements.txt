@@ -1,3 +1,4 @@
 streamlit[pdf]
 pdfplumber
 pandas
+requests

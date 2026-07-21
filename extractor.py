@@ -1,4 +1,5 @@
 """Extracts reference info and line items from Cactoz POs/quotes and arbitrary customer PO PDFs."""
+import io
 import re
 import pdfplumber
 
@@ -66,12 +67,48 @@ def find_first(patterns, text):
     return None
 
 
-def get_text(path):
+# Ceiling on the total pixels a single rendered page can produce, sized well
+# above any real business document - even an A0-sized page (33.1 x 46.8 in)
+# still renders at the full default resolution under this budget. A page
+# with an absurd/crafted declared size (independent of file size) gets
+# scaled down proportionally instead of rejected - unless even the lowest
+# usable DPI would still blow the budget (only possible for a page sized
+# like a ~37x37 foot banner or bigger, which no real business document is),
+# in which case that single page is skipped rather than rendered unsafely.
+MAX_RENDER_PIXELS = 80_000_000
+MIN_RENDER_DPI = 20
+
+
+def _render_page_png(page, resolution=200):
+    width_in = (page.width or 0) / 72
+    height_in = (page.height or 0) / 72
+    if width_in <= 0 or height_in <= 0:
+        return None
+    max_dpi_for_budget = (MAX_RENDER_PIXELS / (width_in * height_in)) ** 0.5
+    resolution = min(resolution, max_dpi_for_budget)
+    if resolution < MIN_RENDER_DPI:
+        return None
+    image = page.to_image(resolution=int(resolution)).original
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def get_text(path, _ocr_fallback=None):
+    """Returns (text, ocr_used). Pages with no text layer (flat scans) are
+    rendered to a PNG and passed to _ocr_fallback(png_bytes) -> str if given."""
     pages = []
+    ocr_used = False
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
-            pages.append(page.extract_text() or "")
-    return "\n".join(pages)
+            text = page.extract_text() or ""
+            if not text.strip() and _ocr_fallback is not None:
+                png_bytes = _render_page_png(page)
+                if png_bytes is not None:
+                    text = _ocr_fallback(png_bytes) or ""
+                    ocr_used = True
+            pages.append(text)
+    return "\n".join(pages), ocr_used
 
 
 def is_cactoz_template(text):
@@ -220,8 +257,8 @@ def parse_generic_items(text):
     return items
 
 
-def extract_document(path):
-    text = get_text(path)
+def extract_document(path, _ocr_fallback=None):
+    text, ocr_used = get_text(path, _ocr_fallback=_ocr_fallback)
     cactoz = is_cactoz_template(text)
     if cactoz:
         header = text.strip().splitlines()[0]
@@ -247,5 +284,6 @@ def extract_document(path):
         "total_amount": total_amount,
         "referenced_quote_no": quote_ref,
         "line_items": items,
+        "ocr_used": ocr_used,
         "raw_text": text,
     }

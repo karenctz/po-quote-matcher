@@ -1,7 +1,9 @@
-"""Line-item matching and comparison between a supplier PO and a customer quote/PO."""
+"""Line-item matching and comparison between any two of: a Cactoz quote, a
+customer's signed copy/PO, or a supplier PO."""
 import difflib
 
 MATCH_THRESHOLD = 0.35
+PRICE_TOLERANCE = 0.01
 
 
 def _similarity(a, b):
@@ -23,65 +25,82 @@ def doc_pair_score(items_a, items_b):
     return sum(best_scores) / len(best_scores)
 
 
-def compare_line_items(supplier_items, customer_items):
-    """Greedily pairs supplier PO lines with customer doc lines by description similarity.
+def compare_line_items(items_a, items_b, mode="margin"):
+    """Greedily pairs items_a lines with items_b lines by description similarity.
+
+    mode="margin": items_a is the sell side (Cactoz quote or customer doc) and
+    items_b is the buy/cost side (a supplier PO); flags when margin
+    (a.unit_price - b.unit_price) <= 0.
+
+    mode="exact_match": both sides are sell-side documents expected to carry
+    the same price (e.g. a Cactoz quote vs. the customer's signed copy);
+    flags any unit-price difference beyond a small tolerance instead.
 
     Returns matched pairs (with flags) plus lists of items only found on one side.
     """
-    remaining_customer = list(enumerate(customer_items))
+    remaining_b = list(enumerate(items_b))
     matched = []
-    unmatched_supplier = []
+    unmatched_a = []
 
-    for s_idx, s_item in enumerate(supplier_items):
+    for a_item in items_a:
         best_j, best_score = None, 0.0
-        for j, (c_idx, c_item) in enumerate(remaining_customer):
-            score = _similarity(s_item["description"], c_item["description"])
+        for j, (_, b_item) in enumerate(remaining_b):
+            score = _similarity(a_item["description"], b_item["description"])
             if score > best_score:
                 best_score, best_j = score, j
 
         if best_j is not None and best_score >= MATCH_THRESHOLD:
-            c_idx, c_item = remaining_customer.pop(best_j)
+            _, b_item = remaining_b.pop(best_j)
             qty_match = (
-                s_item.get("qty") is not None
-                and c_item.get("qty") is not None
-                and float(s_item["qty"]) == float(c_item["qty"])
+                a_item.get("qty") is not None
+                and b_item.get("qty") is not None
+                and float(a_item["qty"]) == float(b_item["qty"])
             )
             margin = None
             margin_flag = None
-            if s_item.get("unit_price") is not None and c_item.get("unit_price") is not None:
-                margin = c_item["unit_price"] - s_item["unit_price"]
-                margin_flag = margin <= 0
+            price_mismatch = None
+            if a_item.get("unit_price") is not None and b_item.get("unit_price") is not None:
+                margin = a_item["unit_price"] - b_item["unit_price"]
+                if mode == "margin":
+                    margin_flag = margin <= 0
+                else:
+                    price_mismatch = abs(margin) > PRICE_TOLERANCE
             matched.append({
-                "supplier_item": s_item,
-                "customer_item": c_item,
+                "item_a": a_item,
+                "item_b": b_item,
                 "similarity": round(best_score, 2),
                 "qty_match": qty_match,
                 "margin": margin,
                 "margin_flag": margin_flag,
+                "price_mismatch": price_mismatch,
             })
         else:
-            unmatched_supplier.append(s_item)
+            unmatched_a.append(a_item)
 
-    unmatched_customer = [c_item for _, c_item in remaining_customer]
+    unmatched_b = [b_item for _, b_item in remaining_b]
     return {
         "matched": matched,
-        "unmatched_supplier": unmatched_supplier,
-        "unmatched_customer": unmatched_customer,
+        "unmatched_a": unmatched_a,
+        "unmatched_b": unmatched_b,
+        "mode": mode,
     }
 
 
 def verdict(result):
     issues = []
+    mode = result.get("mode", "margin")
     for m in result["matched"]:
-        desc = m["supplier_item"]["description"][:50]
+        desc = m["item_a"]["description"][:50]
         if not m["qty_match"]:
-            issues.append(f"Qty mismatch on \"{desc}\": supplier {m['supplier_item'].get('qty')} vs customer {m['customer_item'].get('qty')}")
-        if m["margin_flag"]:
-            issues.append(f"Zero/negative margin on \"{desc}\": buy {m['supplier_item'].get('unit_price')} vs sell {m['customer_item'].get('unit_price')}")
+            issues.append(f"Qty mismatch on \"{desc}\": {m['item_a'].get('qty')} vs {m['item_b'].get('qty')}")
+        if mode == "margin" and m["margin_flag"]:
+            issues.append(f"Zero/negative margin on \"{desc}\": buy {m['item_b'].get('unit_price')} vs sell {m['item_a'].get('unit_price')}")
+        if mode == "exact_match" and m["price_mismatch"]:
+            issues.append(f"Price mismatch on \"{desc}\": {m['item_a'].get('unit_price')} vs {m['item_b'].get('unit_price')}")
         if m["similarity"] < 0.6:
             issues.append(f"Weak description match (similarity {m['similarity']}) on \"{desc}\"")
-    for item in result["unmatched_supplier"]:
-        issues.append(f"In supplier PO but not found in customer doc: \"{item['description'][:60]}\"")
-    for item in result["unmatched_customer"]:
-        issues.append(f"In customer doc but not found in supplier PO: \"{item['description'][:60]}\"")
+    for item in result["unmatched_a"]:
+        issues.append(f"Not found on the other side: \"{item['description'][:60]}\"")
+    for item in result["unmatched_b"]:
+        issues.append(f"Not found on the other side: \"{item['description'][:60]}\"")
     return issues
