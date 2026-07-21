@@ -7,9 +7,13 @@ AI Builder "Recognize text" action expects an actual binary file object for
 its Image input - a hand-built base64ToBinary()/concat() expression in the
 flow does not produce the same shape and fails with InvalidImage.
 
-The flow's Response action returns the recognized text as a plain-text body
-(not JSON) - simpler to keep that instead of fighting Power Automate's
-expression editor to wrap it into valid JSON."""
+The flow's Response action returns the AI Builder action's full JSON output
+(a "lines" array, each with its text and a boundingBox), not just flat text -
+a single concatenated string doesn't reliably preserve which words belong on
+the same visual row (e.g. a label and its value in a two-column form, or a
+table's column headers), since AI Builder often outputs those as separate
+lines even when they're visually on the same row. extractor.reconstruct_ocr_text()
+uses the coordinates to regroup them correctly."""
 import requests
 
 
@@ -24,4 +28,4 @@ def call_power_automate_ocr(png_bytes, url, secret, timeout=60):
         timeout=timeout,
     )
     response.raise_for_status()
-    return response.text
+    return response.json().get("lines", [])

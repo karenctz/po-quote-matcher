@@ -81,11 +81,16 @@ flow using AI Builder, which you'll need to build once in your own tenant
    document-processing model on your exact quote layout for higher accuracy
    without changing anything on the Python side; the only contract the app
    relies on is the response below.
-5. **Response**: status `200`, body set to the Recognize-text action's
-   **Text** output directly (plain text, not wrapped in JSON — trying to
-   hand-build valid JSON containing arbitrary recognized text, with its own
-   quotes/newlines, through Power Automate's expression editor was more
-   trouble than it's worth).
+5. **Response**: status `200`, body set to the Recognize-text action's whole
+   **Body** output (not just its "Text" field) — pick it from dynamic
+   content. This includes a `lines` array with each line's text and its
+   `boundingBox` (left/top/width/height), which the app uses to reconstruct
+   table rows and label/value pairs correctly (see
+   `extractor.reconstruct_ocr_text()`). AI Builder's plain concatenated text
+   often splits a single visual row — a form label and its value, or a
+   table's column headers — into separate lines even when they belong
+   together, which broke the regex-based parser; the coordinates let the
+   app regroup them by actual position instead of guessing from word order.
 6. Save and publish the flow, then test it with a real image before copying
    its HTTP trigger URL into `power_automate_url` — e.g. from PowerShell:
    ```powershell

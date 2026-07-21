@@ -94,9 +94,53 @@ def _render_page_png(page, resolution=200):
     return buf.getvalue()
 
 
+def reconstruct_ocr_text(lines):
+    """Rebuilds a text blob from OCR line boxes (each {"text", "boundingBox":
+    {"left", "top", "width", "height"}}), grouping lines that share the same
+    visual row by vertical position and ordering each row left-to-right.
+
+    AI Builder's OCR frequently splits a single visual row - a label and its
+    value in a two-column form (e.g. "No." / ": KY-SQ2607-5041"), or a
+    table's column headers ("Qty" / "Unit Price" / "Amount") - into separate
+    output lines, even though they belong together. The existing regex-based
+    parsers expect that content on one line (matching how pdfplumber's native
+    text extraction already joins it), so this reconstructs that shape using
+    the OCR engine's own coordinates rather than guessing from word order.
+    """
+    boxed = []
+    for ln in lines:
+        text = (ln.get("text") or "").strip()
+        box = ln.get("boundingBox") or {}
+        top, height, left = box.get("top"), box.get("height"), box.get("left")
+        if not text or top is None or height is None or left is None:
+            continue
+        boxed.append({"text": text, "top": top, "height": height, "left": left, "center": top + height / 2})
+
+    if not boxed:
+        return ""
+
+    boxed.sort(key=lambda b: b["center"])
+
+    rows = [[boxed[0]]]
+    for b in boxed[1:]:
+        prev = rows[-1][-1]
+        threshold = max(b["height"], prev["height"]) * 0.6
+        if abs(b["center"] - prev["center"]) <= threshold:
+            rows[-1].append(b)
+        else:
+            rows.append([b])
+
+    lines_out = []
+    for row in rows:
+        row.sort(key=lambda b: b["left"])
+        lines_out.append(" ".join(b["text"] for b in row))
+    return "\n".join(lines_out)
+
+
 def get_text(path, _ocr_fallback=None):
     """Returns (text, ocr_used). Pages with no text layer (flat scans) are
-    rendered to a PNG and passed to _ocr_fallback(png_bytes) -> str if given."""
+    rendered to a PNG and passed to _ocr_fallback(png_bytes) -> list of OCR
+    line boxes, if given (see reconstruct_ocr_text)."""
     pages = []
     ocr_used = False
     with pdfplumber.open(path) as pdf:
@@ -105,7 +149,8 @@ def get_text(path, _ocr_fallback=None):
             if not text.strip() and _ocr_fallback is not None:
                 png_bytes = _render_page_png(page)
                 if png_bytes is not None:
-                    text = _ocr_fallback(png_bytes) or ""
+                    ocr_lines = _ocr_fallback(png_bytes) or []
+                    text = reconstruct_ocr_text(ocr_lines)
                     ocr_used = True
             pages.append(text)
     return "\n".join(pages), ocr_used

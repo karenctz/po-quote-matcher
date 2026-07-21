@@ -65,7 +65,7 @@ def build_ocr_fallback():
                 "OCR request failed — add line items manually for this document. "
                 "(Details were written to the app's server logs.)"
             )
-            return ""
+            return []
 
     return _fallback
 
