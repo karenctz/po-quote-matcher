@@ -26,11 +26,11 @@ password, if one is set — see "Secrets" below).
 
 1. Go to [share.streamlit.io](https://share.streamlit.io), sign in, and
    click "New app".
-2. Point it at the `karenctz/po-quote-matcher` GitHub repo, branch `main`,
+2. Point it at the `karenctz/po-quote-matcher` GitHub repo, branch `master`,
    main file path `app.py`. Deploy.
 3. Once deployed, open the app's Settings → Secrets, and paste in the
    contents of `secrets.toml.example` (see below) with real values filled in.
-4. Every push to `main` on GitHub auto-redeploys the app — nothing else to do.
+4. Every push to `master` on GitHub auto-redeploys the app — nothing else to do.
 
 ## Secrets
 
@@ -52,37 +52,46 @@ flow using AI Builder, which you'll need to build once in your own tenant
 (Premium access required):
 
 1. **Trigger**: add "When an HTTP request is received" (Premium connector).
-   Request body JSON schema:
-   ```json
-   {
-     "type": "object",
-     "properties": {
-       "secret": { "type": "string" },
-       "image_base64": { "type": "string" }
-     }
-   }
-   ```
+   Leave the request body schema empty — the image is sent as a raw binary
+   body (`Content-Type: image/png`), not JSON. The shared secret travels as
+   a custom header instead (`X-Ocr-Secret`), since there's no JSON body to
+   read it from.
+   > Why not JSON + base64? The AI Builder "Recognize text" action's Image
+   > input expects an actual binary file object. A hand-built
+   > `base64ToBinary()`/`concat()` expression against a JSON string field
+   > does not produce the same shape, and consistently fails with
+   > `InvalidImage` even with a valid, correctly-encoded image — confirmed
+   > by comparing against a working flow where Image was bound directly to
+   > `Body` (dynamic content), not a typed expression.
 2. **Check the secret**: add a Condition comparing
-   `triggerBody()?['secret']` against the value you'll put in
-   `power_automate_secret`. On the "if false" branch, add a Response action
-   with status `401` and terminate that branch.
-3. **Decode the image**: use `base64ToBinary(triggerBody()?['image_base64'])`
-   as the file content input.
-4. **Run OCR**: add the AI Builder action **"Extract information from images
-   or PDF documents"** (or "Recognize text in an image", whichever is
-   available in your environment) on the decoded image. This just needs
-   plain OCR text out — no per-field training required for v1. You can
-   later swap in a custom-trained AI Builder document-processing model on
-   your exact quote layout for higher accuracy without changing anything on
-   the Python side; the only contract the app relies on is the final JSON
-   shape below.
+   `triggerOutputs()?['headers']?['x-ocr-secret']` (lowercase — headers
+   arrive lowercased regardless of how the client sends them) against the
+   value you'll put in `power_automate_secret`. Enter this via the
+   Condition field's **Expression** tab, not by typing directly into the
+   token box — the designer's dynamic-content box will otherwise silently
+   turn it into literal text or an unrelated auto-matched token instead of
+   a real expression. On the "if false" branch, add a Response action with
+   status `401` and terminate that branch.
+3. **Run OCR**: add the AI Builder action **"Recognize text in image or
+   document"** (or "Extract information from images or PDF documents",
+   whichever is available in your environment). Set its **Image** input to
+   `Body` (pick it from dynamic content — it's the trigger's raw binary
+   output). This just needs plain OCR text out — no per-field training
+   required for v1. You can later swap in a custom-trained AI Builder
+   document-processing model on your exact quote layout for higher accuracy
+   without changing anything on the Python side; the only contract the app
+   relies on is the final JSON shape below.
 5. **Response**: status `200`, body:
    ```json
    { "text": "<the recognized text>" }
    ```
-6. Save and publish the flow, then test it directly in the Power Automate
-   portal (paste a base64-encoded sample image) before copying its HTTP
-   trigger URL into `power_automate_url`.
+6. Save and publish the flow, then test it with a real image before copying
+   its HTTP trigger URL into `power_automate_url` — e.g. from PowerShell:
+   ```powershell
+   Invoke-RestMethod -Uri "<trigger URL>" -Method Post `
+     -InFile "sample-scan.png" -ContentType "image/png" `
+     -Headers @{ "X-Ocr-Secret" = "<your secret>" }
+   ```
 
 ## How to use it
 
