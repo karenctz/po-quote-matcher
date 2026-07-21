@@ -80,11 +80,12 @@ flow using AI Builder, which you'll need to build once in your own tenant
    required for v1. You can later swap in a custom-trained AI Builder
    document-processing model on your exact quote layout for higher accuracy
    without changing anything on the Python side; the only contract the app
-   relies on is the final JSON shape below.
-5. **Response**: status `200`, body:
-   ```json
-   { "text": "<the recognized text>" }
-   ```
+   relies on is the response below.
+5. **Response**: status `200`, body set to the Recognize-text action's
+   **Text** output directly (plain text, not wrapped in JSON — trying to
+   hand-build valid JSON containing arbitrary recognized text, with its own
+   quotes/newlines, through Power Automate's expression editor was more
+   trouble than it's worth).
 6. Save and publish the flow, then test it with a real image before copying
    its HTTP trigger URL into `power_automate_url` — e.g. from PowerShell:
    ```powershell
