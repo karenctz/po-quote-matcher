@@ -1,6 +1,7 @@
 """Extracts reference info and line items from Cactoz POs/quotes and arbitrary customer PO PDFs."""
 import io
 import re
+import sys
 import pdfplumber
 
 MONEY = r"[\d][\d,]*\.\d{2}"
@@ -121,10 +122,14 @@ def reconstruct_ocr_text(lines):
 
     boxed.sort(key=lambda b: b["center"])
 
+    # Grouping is gated on the smaller of the two heights, not the larger -
+    # otherwise a single large-font title (e.g. a page heading) can "reach"
+    # far enough to bridge two unrelated small-text rows above and below it
+    # into one merged row, scrambling their word order once sorted by x.
     rows = [[boxed[0]]]
     for b in boxed[1:]:
         prev = rows[-1][-1]
-        threshold = max(b["height"], prev["height"]) * 0.6
+        threshold = min(b["height"], prev["height"]) * 0.6
         if abs(b["center"] - prev["center"]) <= threshold:
             rows[-1].append(b)
         else:
@@ -152,13 +157,21 @@ def get_text(path, _ocr_fallback=None):
                     ocr_lines = _ocr_fallback(png_bytes) or []
                     text = reconstruct_ocr_text(ocr_lines)
                     ocr_used = True
+                    # TEMP DEBUG - remove once OCR row-reconstruction is confirmed working
+                    print("--- OCR reconstructed text ---", file=sys.stderr)
+                    print(text, file=sys.stderr)
+                    print("--- end OCR reconstructed text ---", file=sys.stderr)
             pages.append(text)
     return "\n".join(pages), ocr_used
 
 
 def is_cactoz_template(text):
-    head = text.strip().splitlines()[0] if text.strip() else ""
-    return head.startswith("Cactoz Pte Ltd")
+    # Checks the first couple of lines rather than requiring an exact-first-
+    # line match: OCR'd letterheads can have "Cactoz Pte Ltd" merged onto the
+    # same reconstructed row as an adjacent title/logo element and sorted
+    # after it by horizontal position, rather than landing as its own line.
+    head = "\n".join(text.strip().splitlines()[:2])
+    return "Cactoz Pte Ltd" in head
 
 
 def guess_party_name(text, is_cactoz):
