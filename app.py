@@ -5,45 +5,14 @@ import traceback
 import pandas as pd
 import streamlit as st
 
+from auth import check_password, get_secret
 from extractor import extract_document
 from matcher import compare_line_items, doc_pair_score, verdict
 from ocr import call_power_automate_ocr
 
 st.set_page_config(page_title="PO vs Customer Quote Matcher", layout="wide")
 
-
-def get_secret(key):
-    # st.secrets.get() still raises StreamlitSecretNotFoundError when no
-    # secrets.toml exists anywhere at all (e.g. a fresh local checkout with
-    # no secrets configured), rather than returning the default - guard it.
-    try:
-        return st.secrets.get(key)
-    except Exception:
-        return None
-
-
-def password_ok(entered, expected):
-    return not expected or entered == expected
-
-
-def check_password():
-    expected = get_secret("app_password")
-    if not expected:
-        return True
-    if st.session_state.get("authenticated"):
-        return True
-    st.title("PO ↔ Customer Quote Matcher")
-    pw = st.text_input("Password", type="password", key="password_input")
-    if pw:
-        if password_ok(pw, expected):
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
-    return False
-
-
-if not check_password():
+if not check_password("PO ↔ Customer Quote Matcher"):
     st.stop()
 
 

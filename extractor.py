@@ -2,6 +2,8 @@
 import io
 import re
 import pdfplumber
+import pandas as pd
+from PIL import Image
 
 MONEY = r"[\d][\d,]*\.\d{2}"
 
@@ -340,3 +342,112 @@ def extract_document(path, _ocr_fallback=None):
         "ocr_used": ocr_used,
         "raw_text": text,
     }
+
+
+# --- Generic 2-document comparison (any quote, not just Cactoz/customer PO) ---
+# Reuses the OCR plumbing above (reconstruct_ocr_text/_render_page_png) and
+# parse_generic_items() so scanned images go through the same code path as a
+# scanned PDF page, and adds a spreadsheet reader for Excel/CSV quotes.
+
+COLUMN_KEYWORDS = {
+    "part_no": ["part no", "part number", "part#", "pn", "sku", "model", "material", "item no", "item code"],
+    "description": ["description", "desc", "item", "product", "name"],
+    "qty": ["qty", "quantity", "units"],
+    "unit_price": ["unit price", "unit cost", "price", "rate", "cost"],
+    "amount": ["amount", "total", "subtotal", "ext price", "extended price", "line total"],
+}
+# check longer/more specific keywords before shorter/generic ones sharing a
+# substring (e.g. "unit price" before "price", "part no" before "item no")
+_FIELD_ORDER = ["part_no", "unit_price", "amount", "qty", "description"]
+
+
+def guess_spreadsheet_mapping(columns):
+    mapping = {}
+    used = set()
+    for field in _FIELD_ORDER:
+        for col in columns:
+            if col in used:
+                continue
+            col_norm = str(col).strip().lower()
+            if any(kw in col_norm for kw in COLUMN_KEYWORDS[field]):
+                mapping[field] = col
+                used.add(col)
+                break
+    return mapping
+
+
+def extract_spreadsheet(file_bytes, filename):
+    buf = io.BytesIO(file_bytes)
+    if filename.lower().endswith(".csv"):
+        df = pd.read_csv(buf)
+    else:
+        df = pd.read_excel(buf)
+    df.columns = [str(c) for c in df.columns]
+    mapping = guess_spreadsheet_mapping(list(df.columns))
+
+    items = []
+    for _, row in df.iterrows():
+        desc = str(row[mapping["description"]]).strip() if "description" in mapping else ""
+        if not desc or desc.lower() == "nan":
+            continue
+        items.append({
+            "part_no": str(row[mapping["part_no"]]).strip() if "part_no" in mapping and str(row[mapping["part_no"]]).strip().lower() != "nan" else "",
+            "description": desc,
+            "qty": parse_number(row[mapping["qty"]]) if "qty" in mapping else None,
+            "unit_price": parse_number(row[mapping["unit_price"]]) if "unit_price" in mapping else None,
+            "amount": parse_number(row[mapping["amount"]]) if "amount" in mapping else None,
+        })
+
+    return {
+        "doc_type": "Spreadsheet quote",
+        "reference_no": None,
+        "order_date": None,
+        "party_name": None,
+        "total_amount": None,
+        "referenced_quote_no": None,
+        "line_items": items,
+        "ocr_used": False,
+        "raw_text": "",
+    }
+
+
+def _to_png_bytes(image_bytes):
+    img = Image.open(io.BytesIO(image_bytes))
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def extract_image(file_bytes, _ocr_fallback=None):
+    png_bytes = _to_png_bytes(file_bytes)
+    text = ""
+    if _ocr_fallback is not None:
+        ocr_lines = _ocr_fallback(png_bytes) or []
+        text = reconstruct_ocr_text(ocr_lines)
+    items = parse_generic_items(text) if text else []
+
+    return {
+        "doc_type": "Scanned image quote",
+        "reference_no": None,
+        "order_date": None,
+        "party_name": None,
+        "total_amount": None,
+        "referenced_quote_no": None,
+        "line_items": items,
+        "ocr_used": True,
+        "raw_text": text,
+    }
+
+
+def extract_any_document(file_bytes, filename, _ocr_fallback=None):
+    """Dispatches by extension: PDF (existing Cactoz/customer-PO parser),
+    Excel/CSV (spreadsheet reader), or an image (OCR via _ocr_fallback,
+    same plumbing a scanned PDF page uses)."""
+    name = filename.lower()
+    if name.endswith(".pdf"):
+        return extract_document(io.BytesIO(file_bytes), _ocr_fallback=_ocr_fallback)
+    if name.endswith((".xlsx", ".xls", ".csv")):
+        return extract_spreadsheet(file_bytes, name)
+    if name.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")):
+        return extract_image(file_bytes, _ocr_fallback=_ocr_fallback)
+    raise ValueError(f"Unsupported file type: {filename}")

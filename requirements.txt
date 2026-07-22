@@ -2,3 +2,5 @@ streamlit[pdf]
 pdfplumber
 pandas
 requests
+pillow
+openpyxl
