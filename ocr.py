@@ -28,4 +28,8 @@ def call_power_automate_ocr(png_bytes, url, secret, timeout=60):
         timeout=timeout,
     )
     response.raise_for_status()
-    return response.json().get("lines", [])
+    data = response.json()
+    # The connector nests per-page line data several levels deep rather than
+    # exposing it at the top level of the response.
+    results = data.get("responsev2", {}).get("predictionOutput", {}).get("results", [])
+    return results[0].get("lines", []) if results else []
