@@ -1,11 +1,14 @@
 import streamlit as st
 
 from auth import check_password
+from nav import hide_main_nav_entry
 
 st.set_page_config(page_title="Quote Matcher", layout="centered")
 
 if not check_password("Quote Matcher"):
     st.stop()
+
+hide_main_nav_entry()
 
 st.title("Quote Matcher")
 st.caption("Choose what you want to compare.")

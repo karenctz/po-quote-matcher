@@ -8,6 +8,7 @@ import streamlit as st
 from auth import check_password, get_secret
 from extractor import extract_any_document
 from matcher import compare_line_items, verdict
+from nav import hide_main_nav_entry
 from ocr import call_power_automate_ocr
 
 st.set_page_config(page_title="Compare Any 2 Documents", layout="wide")
@@ -15,6 +16,7 @@ st.set_page_config(page_title="Compare Any 2 Documents", layout="wide")
 if not check_password("Compare Any 2 Documents"):
     st.stop()
 
+hide_main_nav_entry()
 st.page_link("app.py", label="← Back to menu", icon=":material/arrow_back:")
 
 
