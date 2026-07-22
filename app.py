@@ -85,47 +85,63 @@ def load_docs(files, _ocr_fallback=None):
     return docs, raw_bytes
 
 
+@st.dialog("Original PDF", width="large")
+def _show_pdf_dialog(name, data):
+    st.caption(name)
+    st.pdf(data, height=700)
+
+
 def render_editable_docs(docs, raw_bytes, section_label):
     edited = {}
     for name, doc in docs.items():
-        title = f"{name}  —  {doc['doc_type']}  —  Ref: {doc['reference_no'] or '?'}"
-        with st.expander(title, expanded=False):
-            meta_cols = st.columns(4)
-            meta_cols[0].metric("Reference No.", doc["reference_no"] or "—")
-            meta_cols[1].metric("Party", doc["party_name"] or "—")
-            meta_cols[2].metric("Date", doc["order_date"] or "—")
-            meta_cols[3].metric(
-                "Total (SGD)",
-                f"{doc['total_amount']:,.2f}" if doc["total_amount"] else "—",
+        with st.container(border=True):
+            header_cols = st.columns([5, 1], vertical_alignment="center")
+            header_cols[0].markdown(
+                f"**{name}**  \n{doc['doc_type']}  —  Ref: {doc['reference_no'] or '?'}"
             )
-            if doc.get("referenced_quote_no"):
-                st.caption(f"Document references quote: {doc['referenced_quote_no']}")
-            if doc.get("ocr_used"):
-                st.caption(
-                    "⚡ This document had no text layer (a scan) and was read via OCR — "
-                    "double-check the extracted numbers carefully before comparing."
-                )
-            if not doc["line_items"]:
-                st.caption("No line items were auto-detected — add rows manually below if needed.")
-            df = pd.DataFrame(
-                doc["line_items"], columns=["part_no", "description", "qty", "unit_price", "amount"]
-            )
-            edited_df = st.data_editor(
-                df,
-                num_rows="dynamic",
+            if header_cols[1].button(
+                "View PDF",
+                icon=":material/description:",
+                key=f"viewbtn_{section_label}_{name}",
                 width="stretch",
-                key=f"editor_{section_label}_{name}",
-                column_config={
-                    "part_no": "Part No.",
-                    "description": "Description",
-                    "qty": st.column_config.NumberColumn("Qty"),
-                    "unit_price": st.column_config.NumberColumn("Unit Price", format="%.2f"),
-                    "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
-                },
-            )
-            edited[name] = edited_df.to_dict("records")
-            if st.checkbox("View original PDF", key=f"viewpdf_{section_label}_{name}"):
-                st.pdf(raw_bytes[name], height=600)
+            ):
+                _show_pdf_dialog(name, raw_bytes[name])
+
+            with st.expander("Review & edit line items", expanded=False):
+                meta_cols = st.columns(4)
+                meta_cols[0].metric("Reference No.", doc["reference_no"] or "—")
+                meta_cols[1].metric("Party", doc["party_name"] or "—")
+                meta_cols[2].metric("Date", doc["order_date"] or "—")
+                meta_cols[3].metric(
+                    "Total (SGD)",
+                    f"{doc['total_amount']:,.2f}" if doc["total_amount"] else "—",
+                )
+                if doc.get("referenced_quote_no"):
+                    st.caption(f"Document references quote: {doc['referenced_quote_no']}")
+                if doc.get("ocr_used"):
+                    st.caption(
+                        "⚡ This document had no text layer (a scan) and was read via OCR — "
+                        "double-check the extracted numbers carefully before comparing."
+                    )
+                if not doc["line_items"]:
+                    st.caption("No line items were auto-detected — add rows manually below if needed.")
+                df = pd.DataFrame(
+                    doc["line_items"], columns=["part_no", "description", "qty", "unit_price", "amount"]
+                )
+                edited_df = st.data_editor(
+                    df,
+                    num_rows="dynamic",
+                    width="stretch",
+                    key=f"editor_{section_label}_{name}",
+                    column_config={
+                        "part_no": "Part No.",
+                        "description": "Description",
+                        "qty": st.column_config.NumberColumn("Qty"),
+                        "unit_price": st.column_config.NumberColumn("Unit Price", format="%.2f"),
+                        "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
+                    },
+                )
+                edited[name] = edited_df.to_dict("records")
     return edited
 
 
@@ -244,16 +260,19 @@ st.caption(
     "scanned signed copies rely on OCR, so double-check these tables — edit any cell directly, "
     "or add/remove rows, before comparing."
 )
-tab1, tab2, tab3 = st.tabs(["Cactoz Quotes", "Customer quotes / POs", "Supplier POs"])
-with tab1:
+review_col1, review_col2, review_col3 = st.columns(3)
+with review_col1:
+    st.markdown("#### Cactoz Quotes")
     if not quote_docs:
         st.info("Upload Cactoz quote PDFs above.")
     edited_quote_items = render_editable_docs(quote_docs, quote_bytes, "quote") if quote_docs else {}
-with tab2:
+with review_col2:
+    st.markdown("#### Customer quotes / POs")
     if not customer_docs:
         st.info("Upload customer quote/PO PDFs above.")
     edited_customer_items = render_editable_docs(customer_docs, customer_bytes, "customer") if customer_docs else {}
-with tab3:
+with review_col3:
+    st.markdown("#### Supplier POs")
     if not supplier_docs:
         st.info("Upload supplier PO PDFs above.")
     edited_supplier_items = render_editable_docs(supplier_docs, supplier_bytes, "supplier") if supplier_docs else {}
