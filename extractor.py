@@ -38,13 +38,37 @@ DATE_PATTERNS = [
 
 QUOTE_REF_PATTERN = r"QUOTE\s*REF\.?:?\s*([A-Za-z0-9\-]+)"
 
-PART_NO_RE = re.compile(r"^[A-Z0-9][A-Z0-9/\-]{3,}$")
-BOUNDARY_RE = re.compile(r"^(Sub-Total|GST|Total|Amount Payable|Remarks|Authorised Signature|Note:|General Terms)", re.I)
+PART_NO_RE = re.compile(r"^[A-Z0-9][A-Z0-9/\-:]{3,}$")
+# "GST" alone used to match the "GST Reg. No.: ..." line in Cactoz's own
+# letterhead, which repeats at the top of every page - on a multi-page quote
+# that falsely looked like the "GST 9% ..." end-of-items subtotal line and
+# cut off every item after the page break. Requiring a digit right after
+# (as in "GST 9%") excludes the letterhead line, which is followed by "Reg.".
+BOUNDARY_RE = re.compile(r"^(Sub-Total|GST\s*\d|Total|Amount Payable|Remarks|Authorised Signature|Note:|General Terms)", re.I)
+
+# Cactoz's letterhead repeats at the top of every page of a multi-page quote;
+# on the raw joined text these lines land between the last item of one page
+# and the first item of the next, and would otherwise be misread as a
+# continuation of the previous line item's description (see parse_cactoz_items).
+CACTOZ_HEADER_SKIP_RE = re.compile(
+    r"^(Page \d+ of \d+|Cactoz Pte Ltd|Block \d|Singapore \d|Tel:|Fax:|Co\. Reg\. No\.|GST Reg\. No\.|No\.\s*:|Date\s*:)",
+    re.I,
+)
 
 CACTOZ_ITEM_FULL = re.compile(
     r"^(?P<no>\d+)\s+(?P<rest>.*?)\s+(?P<qty>\d+)\s+(?P<price>" + MONEY + r")\s+(?P<amount>" + MONEY + r")\s*$"
 )
 CACTOZ_ITEM_QTY_ONLY = re.compile(r"^(?P<no>\d+)\s+(?P<rest>.*?)\s+(?P<qty>\d+)\s*$")
+
+
+def _split_part_no(rest):
+    """rest is the free-text portion of a matched item line, before the
+    trailing qty (and price/amount, if present). Returns (part_no, description)
+    - a real Cactoz line item always leads with its part number."""
+    first_tok = rest.split(" ", 1)[0] if rest else ""
+    if PART_NO_RE.match(first_tok):
+        return first_tok, rest[len(first_tok):].strip()
+    return "", rest
 
 DECIMAL_RE = re.compile(MONEY)
 
@@ -213,15 +237,13 @@ def parse_cactoz_items(text):
         if re.fullmatch(MONEY, l):
             # quotations show the pre-GST subtotal as a bare number with no label
             break
+        if CACTOZ_HEADER_SKIP_RE.match(l):
+            # letterhead repeated at the top of the next page - not a
+            # continuation of the previous item, just noise to discard
+            continue
         m = CACTOZ_ITEM_FULL.match(l)
         if m:
-            rest = m.group("rest").strip()
-            part_no = ""
-            desc = rest
-            first_tok = rest.split(" ", 1)[0] if rest else ""
-            if PART_NO_RE.match(first_tok):
-                part_no = first_tok
-                desc = rest[len(first_tok):].strip()
+            part_no, desc = _split_part_no(m.group("rest").strip())
             items.append({
                 "part_no": part_no,
                 "description": desc,
@@ -232,10 +254,10 @@ def parse_cactoz_items(text):
             continue
         m = CACTOZ_ITEM_QTY_ONLY.match(l)
         if m:
-            rest = m.group("rest").strip()
+            part_no, desc = _split_part_no(m.group("rest").strip())
             items.append({
-                "part_no": "",
-                "description": rest,
+                "part_no": part_no,
+                "description": desc,
                 "qty": parse_number(m.group("qty")),
                 "unit_price": None,
                 "amount": None,
@@ -350,8 +372,19 @@ def extract_document(path, _ocr_fallback=None):
 # scanned PDF page, and adds a spreadsheet reader for Excel/CSV quotes.
 
 COLUMN_KEYWORDS = {
-    "part_no": ["part no", "part number", "part#", "pn", "sku", "model", "material", "item no", "item code"],
-    "description": ["description", "desc", "item", "product", "name"],
+    # identifier-style columns are checked before "description" below, so an
+    # identifier column (e.g. "Product #") can never be claimed by the vaguer
+    # "product"/"item" description keywords first
+    "part_no": [
+        "part no", "part number", "part#", "pn", "sku", "model", "material",
+        "item no", "item code", "item #", "product no", "product number",
+        "product code", "product #",
+    ],
+    # deliberately narrow: bare words like "item" or "product" also appear in
+    # identifier headers ("Product #", "Item Code"), so a loose match here
+    # would steal those columns before part_no's own (more specific) keywords
+    # get a chance - see the description-column fallback in extract_spreadsheet
+    "description": ["description", "desc"],
     "qty": ["qty", "quantity", "units"],
     "unit_price": ["unit price", "unit cost", "price", "rate", "cost"],
     "amount": ["amount", "total", "subtotal", "ext price", "extended price", "line total"],
@@ -360,8 +393,20 @@ COLUMN_KEYWORDS = {
 # substring (e.g. "unit price" before "price", "part no" before "item no")
 _FIELD_ORDER = ["part_no", "unit_price", "amount", "qty", "description"]
 
+SPREADSHEET_FOOTER_STOP_RE = re.compile(
+    r"^(total|sub-?total|grand total|terms and conditions|pricing (&|and) ordering|amended by|vendors? terms|notes?:)\b",
+    re.I,
+)
 
-def guess_spreadsheet_mapping(columns):
+HEADER_ROW_KEYWORDS = {
+    "qty": ["qty", "quantity"],
+    "identifier": ["part", "product", "item", "sku", "model"],
+    "description": ["description", "desc"],
+    "price": ["price", "amount", "cost"],
+}
+
+
+def guess_spreadsheet_mapping(columns, sample_df=None):
     mapping = {}
     used = set()
     for field in _FIELD_ORDER:
@@ -373,29 +418,109 @@ def guess_spreadsheet_mapping(columns):
                 mapping[field] = col
                 used.add(col)
                 break
+
+    # Fallback for sheets whose header doesn't literally say "description"
+    # (e.g. just "Item" or "Product"): the description column is reliably the
+    # one with the longest average text, so pick the longest unclaimed column
+    # instead of guessing from the header name at all.
+    if "description" not in mapping and sample_df is not None:
+        candidates = [c for c in columns if c not in used]
+        if candidates:
+            lengths = {c: sample_df[c].astype(str).str.len().mean() for c in candidates}
+            mapping["description"] = max(lengths, key=lengths.get)
+
     return mapping
 
 
-def extract_spreadsheet(file_bytes, filename):
+def _score_header_row(cells):
+    """cells: lowercased, stripped, non-null string values from one row."""
+    score = 0
+    for keywords in HEADER_ROW_KEYWORDS.values():
+        if any(kw in cell for cell in cells for kw in keywords):
+            score += 1
+    return score
+
+
+def _find_header_row(raw_df, max_scan=15):
+    """raw_df has no header applied (positional integer columns). Scans the
+    first max_scan rows for the one that looks most like a real column
+    header (many spreadsheet exports bury the real header several rows down,
+    under a metadata block). Returns (row_idx, score); score 0 means nothing
+    looked like a header at all."""
+    best_idx, best_score = 0, 0
+    for i in range(min(max_scan, len(raw_df))):
+        cells = [str(c).strip().lower() for c in raw_df.iloc[i] if pd.notna(c)]
+        score = _score_header_row(cells)
+        if score > best_score:
+            best_idx, best_score = i, score
+    return best_idx, best_score
+
+
+def _read_sheets_raw(file_bytes, filename):
+    """Returns {sheet_name: DataFrame} with no header applied, so header-row
+    detection can run against the raw grid."""
     buf = io.BytesIO(file_bytes)
     if filename.lower().endswith(".csv"):
-        df = pd.read_csv(buf)
-    else:
-        df = pd.read_excel(buf)
-    df.columns = [str(c) for c in df.columns]
-    mapping = guess_spreadsheet_mapping(list(df.columns))
+        return {"": pd.read_csv(buf, header=None, dtype=str)}
+    xls = pd.ExcelFile(buf)
+    return {name: xls.parse(name, header=None, dtype=str) for name in xls.sheet_names}
+
+
+def _pick_best_sheet(sheets):
+    """A workbook may have several sheets (BOM, pricing rollup, summary, ...)
+    - picks whichever one has the header row that looks most like a real
+    line-item table, since the first sheet isn't reliably the right one."""
+    best = None  # (score, header_idx, raw_df)
+    for raw_df in sheets.values():
+        header_idx, score = _find_header_row(raw_df)
+        if best is None or score > best[0]:
+            best = (score, header_idx, raw_df)
+    return best[1], best[2]
+
+
+def extract_spreadsheet(file_bytes, filename):
+    sheets = _read_sheets_raw(file_bytes, filename)
+    header_idx, raw_df = _pick_best_sheet(sheets)
+
+    header = [
+        str(c).strip() if pd.notna(c) else f"col_{i + 1}"
+        for i, c in enumerate(raw_df.iloc[header_idx])
+    ]
+    df = raw_df.iloc[header_idx + 1:].copy()
+    df.columns = header
+    df = df.reset_index(drop=True)
+
+    mapping = guess_spreadsheet_mapping(list(df.columns), sample_df=df)
 
     items = []
     for _, row in df.iterrows():
-        desc = str(row[mapping["description"]]).strip() if "description" in mapping else ""
+        first_cell = next((str(v).strip() for v in row if pd.notna(v) and str(v).strip()), "")
+        if SPREADSHEET_FOOTER_STOP_RE.match(first_cell):
+            # everything past a "Total"/"Terms and Conditions"/etc. row is
+            # boilerplate footer text, not further line items
+            break
+        desc = str(row[mapping["description"]]).strip() if "description" in mapping and pd.notna(row[mapping["description"]]) else ""
         if not desc or desc.lower() == "nan":
             continue
+        part_no = str(row[mapping["part_no"]]).strip() if "part_no" in mapping and pd.notna(row[mapping["part_no"]]) else ""
+        qty = parse_number(row[mapping["qty"]]) if "qty" in mapping else None
+        unit_price = parse_number(row[mapping["unit_price"]]) if "unit_price" in mapping else None
+        amount = parse_number(row[mapping["amount"]]) if "amount" in mapping else None
+
+        # A row with a description but no part number, qty, price, or amount
+        # is very likely a wrapped continuation of the previous row's
+        # description (common in BOM-style exports where a long description
+        # spills onto a second row with everything else blank), not a new item.
+        if items and not part_no and qty is None and unit_price is None and amount is None:
+            items[-1]["description"] = (items[-1]["description"] + " " + desc).strip()
+            continue
+
         items.append({
-            "part_no": str(row[mapping["part_no"]]).strip() if "part_no" in mapping and str(row[mapping["part_no"]]).strip().lower() != "nan" else "",
+            "part_no": part_no,
             "description": desc,
-            "qty": parse_number(row[mapping["qty"]]) if "qty" in mapping else None,
-            "unit_price": parse_number(row[mapping["unit_price"]]) if "unit_price" in mapping else None,
-            "amount": parse_number(row[mapping["amount"]]) if "amount" in mapping else None,
+            "qty": qty,
+            "unit_price": unit_price,
+            "amount": amount,
         })
 
     return {
