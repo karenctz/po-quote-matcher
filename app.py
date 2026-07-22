@@ -107,6 +107,13 @@ def render_editable_docs(docs, raw_bytes, section_label):
             ):
                 _show_pdf_dialog(name, raw_bytes[name])
 
+            if doc.get("ocr_used"):
+                st.badge(
+                    "Scanned document — read via OCR, verify accuracy",
+                    icon=":material/warning:",
+                    color="orange",
+                )
+
             with st.expander("Review & edit line items", expanded=False):
                 meta_cols = st.columns(4)
                 meta_values = [
