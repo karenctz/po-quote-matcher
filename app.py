@@ -109,7 +109,7 @@ def render_editable_docs(docs, raw_bytes, section_label):
 
             if doc.get("ocr_used"):
                 st.badge(
-                    "Scanned document — read via OCR, verify accuracy",
+                    "Scanned document — it has been read via OCR, please verify accuracy",
                     icon=":material/warning:",
                     color="orange",
                 )
