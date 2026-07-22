@@ -1,7 +1,6 @@
 """Extracts reference info and line items from Cactoz POs/quotes and arbitrary customer PO PDFs."""
 import io
 import re
-import sys
 import pdfplumber
 
 MONEY = r"[\d][\d,]*\.\d{2}"
@@ -157,10 +156,6 @@ def get_text(path, _ocr_fallback=None):
                     ocr_lines = _ocr_fallback(png_bytes) or []
                     text = reconstruct_ocr_text(ocr_lines)
                     ocr_used = True
-                    # TEMP DEBUG - remove once OCR row-reconstruction is confirmed working
-                    print("--- OCR reconstructed text ---", file=sys.stderr)
-                    print(text, file=sys.stderr)
-                    print("--- end OCR reconstructed text ---", file=sys.stderr)
             pages.append(text)
     return "\n".join(pages), ocr_used
 
