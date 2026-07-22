@@ -441,12 +441,13 @@ def _score_header_row(cells):
     return score
 
 
-def _find_header_row(raw_df, max_scan=15):
+def find_header_row(raw_df, max_scan=15):
     """raw_df has no header applied (positional integer columns). Scans the
     first max_scan rows for the one that looks most like a real column
     header (many spreadsheet exports bury the real header several rows down,
     under a metadata block). Returns (row_idx, score); score 0 means nothing
-    looked like a header at all."""
+    looked like a header at all. Exposed (not prefixed with _) so a UI can
+    compute a sensible default before letting a human override it."""
     best_idx, best_score = 0, 0
     for i in range(min(max_scan, len(raw_df))):
         cells = [str(c).strip().lower() for c in raw_df.iloc[i] if pd.notna(c)]
@@ -454,6 +455,29 @@ def _find_header_row(raw_df, max_scan=15):
         if score > best_score:
             best_idx, best_score = i, score
     return best_idx, best_score
+
+
+_find_header_row = find_header_row  # internal alias for the rest of this module
+
+
+def list_sheet_names(file_bytes, filename):
+    """Returns None for a CSV (no sheet concept) or a list of sheet names for
+    an Excel workbook - lets the UI offer a sheet picker only when relevant."""
+    if filename.lower().endswith(".csv"):
+        return None
+    return pd.ExcelFile(io.BytesIO(file_bytes)).sheet_names
+
+
+def read_raw_sheet(file_bytes, filename, sheet_name=None):
+    """Returns a single sheet/CSV as a DataFrame with no header applied
+    (positional integer columns), so the real header row - which may not be
+    row 0 - can be picked afterwards, by a human or by _find_header_row."""
+    buf = io.BytesIO(file_bytes)
+    if filename.lower().endswith(".csv"):
+        return pd.read_csv(buf, header=None, dtype=str)
+    xls = pd.ExcelFile(buf)
+    name = sheet_name if sheet_name is not None else xls.sheet_names[0]
+    return xls.parse(name, header=None, dtype=str)
 
 
 def _read_sheets_raw(file_bytes, filename):
@@ -469,29 +493,32 @@ def _read_sheets_raw(file_bytes, filename):
 def _pick_best_sheet(sheets):
     """A workbook may have several sheets (BOM, pricing rollup, summary, ...)
     - picks whichever one has the header row that looks most like a real
-    line-item table, since the first sheet isn't reliably the right one."""
-    best = None  # (score, header_idx, raw_df)
-    for raw_df in sheets.values():
+    line-item table, since the first sheet isn't reliably the right one.
+    Returns (sheet_name, header_idx, raw_df)."""
+    best = None  # (score, sheet_name, header_idx, raw_df)
+    for name, raw_df in sheets.items():
         header_idx, score = _find_header_row(raw_df)
         if best is None or score > best[0]:
-            best = (score, header_idx, raw_df)
-    return best[1], best[2]
+            best = (score, name, header_idx, raw_df)
+    return best[1], best[2], best[3]
 
 
-def extract_spreadsheet(file_bytes, filename):
-    sheets = _read_sheets_raw(file_bytes, filename)
-    header_idx, raw_df = _pick_best_sheet(sheets)
-
+def apply_header_row(raw_df, header_row):
+    """Slices a header-less raw_df at header_row, using that row as the
+    column names for everything below it."""
     header = [
         str(c).strip() if pd.notna(c) else f"col_{i + 1}"
-        for i, c in enumerate(raw_df.iloc[header_idx])
+        for i, c in enumerate(raw_df.iloc[header_row])
     ]
-    df = raw_df.iloc[header_idx + 1:].copy()
+    df = raw_df.iloc[header_row + 1:].copy()
     df.columns = header
-    df = df.reset_index(drop=True)
+    return df.reset_index(drop=True)
 
-    mapping = guess_spreadsheet_mapping(list(df.columns), sample_df=df)
 
+def items_from_mapped_dataframe(df, mapping):
+    """df has real column names applied (see apply_header_row); mapping is
+    {field: column_name} for whichever of part_no/description/qty/unit_price/
+    amount were identified (by guess_spreadsheet_mapping or picked by hand)."""
     items = []
     for _, row in df.iterrows():
         first_cell = next((str(v).strip() for v in row if pd.notna(v) and str(v).strip()), "")
@@ -522,6 +549,26 @@ def extract_spreadsheet(file_bytes, filename):
             "unit_price": unit_price,
             "amount": amount,
         })
+    return items
+
+
+def extract_spreadsheet(file_bytes, filename, sheet_name=None, header_row=None, mapping=None):
+    """Auto-detects sheet/header/column mapping unless overridden - callers
+    that want a human to confirm/adjust those first (see pages/2_Compare_Any_2_Documents.py)
+    can pass sheet_name, header_row and/or mapping explicitly instead."""
+    if sheet_name is None and header_row is None:
+        sheets = _read_sheets_raw(file_bytes, filename)
+        sheet_name, header_row, raw_df = _pick_best_sheet(sheets)
+    else:
+        raw_df = read_raw_sheet(file_bytes, filename, sheet_name=sheet_name)
+        if header_row is None:
+            header_row, _ = _find_header_row(raw_df)
+
+    df = apply_header_row(raw_df, header_row)
+    if mapping is None:
+        mapping = guess_spreadsheet_mapping(list(df.columns), sample_df=df)
+
+    items = items_from_mapped_dataframe(df, mapping)
 
     return {
         "doc_type": "Spreadsheet quote",

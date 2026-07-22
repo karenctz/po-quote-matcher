@@ -6,7 +6,15 @@ import pandas as pd
 import streamlit as st
 
 from auth import check_password, get_secret
-from extractor import extract_any_document
+from extractor import (
+    apply_header_row,
+    extract_any_document,
+    find_header_row,
+    guess_spreadsheet_mapping,
+    items_from_mapped_dataframe,
+    list_sheet_names,
+    read_raw_sheet,
+)
 from matcher import compare_line_items, verdict
 from nav import hide_main_nav_entry
 from ocr import call_power_automate_ocr
@@ -51,6 +59,10 @@ st.caption(
 )
 
 ACCEPTED_TYPES = ["pdf", "xlsx", "xls", "csv", "png", "jpg", "jpeg", "tif", "tiff", "bmp"]
+FIELD_LABELS = {
+    "part_no": "Part No.", "description": "Description",
+    "qty": "Qty", "unit_price": "Unit Price", "amount": "Amount",
+}
 ocr_fallback = build_ocr_fallback()
 if ocr_fallback is None:
     st.info(
@@ -65,6 +77,96 @@ def parse_bytes(file_bytes, filename, _ocr_fallback=None):
     return extract_any_document(file_bytes, filename, _ocr_fallback=_ocr_fallback)
 
 
+def review_spreadsheet(filename, data, key_prefix):
+    """Excel/CSV path: lets the user confirm/override which sheet, which row
+    is the real header, and which column maps to which field, instead of
+    trusting the auto-detected guess outright - spreadsheet exports vary too
+    much (metadata rows above the header, oddly-named columns) to rely on
+    auto-detection alone."""
+    try:
+        sheet_names = list_sheet_names(data, filename)
+    except Exception as e:
+        st.error(f"Couldn't read {filename}: {e}")
+        return None
+
+    sheet_name = None
+    if sheet_names:
+        sheet_name = st.selectbox(
+            "Sheet", sheet_names, key=f"{key_prefix}_sheet",
+            help="Workbooks with several sheets (e.g. a BOM export) often have the real line-item table on a sheet other than the first.",
+        )
+
+    try:
+        raw_df = read_raw_sheet(data, filename, sheet_name=sheet_name)
+    except Exception as e:
+        st.error(f"Couldn't read {filename}: {e}")
+        return None
+
+    if raw_df.empty:
+        st.warning("This sheet is empty.")
+        return None
+
+    default_header_idx, _ = find_header_row(raw_df)
+    max_row = len(raw_df) - 1
+    with st.expander("Pick header row", expanded=False):
+        st.caption(
+            "Some exports bury the real column headers a few rows down under "
+            "a metadata block — pick the row that actually holds them."
+        )
+        st.dataframe(raw_df.head(20), width="stretch", height=250)
+        header_row = st.number_input(
+            "Header row (0-indexed, per the preview above)",
+            min_value=0, max_value=max(max_row, 0),
+            value=min(default_header_idx, max(max_row, 0)),
+            key=f"{key_prefix}_header_row",
+        )
+
+    df = apply_header_row(raw_df, header_row)
+    if df.empty:
+        st.warning("No rows below the chosen header row.")
+        return None
+
+    default_mapping = guess_spreadsheet_mapping(list(df.columns), sample_df=df)
+    with st.expander("Map columns", expanded=False):
+        cols = ["(none)"] + list(df.columns)
+        mapping = {}
+        map_cols = st.columns(len(FIELD_LABELS))
+        for col, field in zip(map_cols, FIELD_LABELS):
+            default_col = default_mapping.get(field)
+            default_idx = cols.index(default_col) if default_col in cols else 0
+            with col:
+                choice = st.selectbox(
+                    FIELD_LABELS[field], cols, index=default_idx,
+                    key=f"{key_prefix}_map_{field}",
+                )
+            if choice != "(none)":
+                mapping[field] = choice
+
+    items = items_from_mapped_dataframe(df, mapping)
+    st.caption(f"{len(items)} line item(s) detected")
+    if not items:
+        st.caption("No line items detected with this mapping — add rows manually below if needed.")
+    return items
+
+
+def edit_items_table(items, key_prefix):
+    df = pd.DataFrame(items, columns=["part_no", "description", "qty", "unit_price", "amount"])
+    edited_df = st.data_editor(
+        df,
+        num_rows="dynamic",
+        width="stretch",
+        key=f"{key_prefix}_editor",
+        column_config={
+            "part_no": "Part No.",
+            "description": "Description",
+            "qty": st.column_config.NumberColumn("Qty"),
+            "unit_price": st.column_config.NumberColumn("Unit Price", format="%.2f"),
+            "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
+        },
+    )
+    return edited_df.to_dict("records")
+
+
 def upload_and_review(label, key_prefix):
     st.subheader(label)
     up = st.file_uploader(f"Upload {label}", type=ACCEPTED_TYPES, key=f"{key_prefix}_upload")
@@ -72,6 +174,14 @@ def upload_and_review(label, key_prefix):
         return None
 
     data = up.getvalue()
+    name = up.name.lower()
+
+    if name.endswith((".xlsx", ".xls", ".csv")):
+        items = review_spreadsheet(up.name, data, key_prefix)
+        if items is None:
+            return None
+        return edit_items_table(items, key_prefix)
+
     try:
         doc = parse_bytes(data, up.name, _ocr_fallback=ocr_fallback)
     except Exception as e:
@@ -88,21 +198,7 @@ def upload_and_review(label, key_prefix):
     if not doc["line_items"]:
         st.caption("No line items were auto-detected — add rows manually below if needed.")
 
-    df = pd.DataFrame(doc["line_items"], columns=["part_no", "description", "qty", "unit_price", "amount"])
-    edited_df = st.data_editor(
-        df,
-        num_rows="dynamic",
-        width="stretch",
-        key=f"{key_prefix}_editor",
-        column_config={
-            "part_no": "Part No.",
-            "description": "Description",
-            "qty": st.column_config.NumberColumn("Qty"),
-            "unit_price": st.column_config.NumberColumn("Unit Price", format="%.2f"),
-            "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
-        },
-    )
-    return edited_df.to_dict("records")
+    return edit_items_table(doc["line_items"], key_prefix)
 
 
 col_a, col_b = st.columns(2)
