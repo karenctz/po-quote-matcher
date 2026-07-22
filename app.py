@@ -109,20 +109,17 @@ def render_editable_docs(docs, raw_bytes, section_label):
 
             with st.expander("Review & edit line items", expanded=False):
                 meta_cols = st.columns(4)
-                meta_cols[0].metric("Reference No.", doc["reference_no"] or "—")
-                meta_cols[1].metric("Party", doc["party_name"] or "—")
-                meta_cols[2].metric("Date", doc["order_date"] or "—")
-                meta_cols[3].metric(
-                    "Total (SGD)",
-                    f"{doc['total_amount']:,.2f}" if doc["total_amount"] else "—",
-                )
+                meta_values = [
+                    ("Reference No.", doc["reference_no"] or "—"),
+                    ("Party", doc["party_name"] or "—"),
+                    ("Date", doc["order_date"] or "—"),
+                    ("Total (SGD)", f"{doc['total_amount']:,.2f}" if doc["total_amount"] else "—"),
+                ]
+                for col, (label, value) in zip(meta_cols, meta_values):
+                    col.caption(label)
+                    col.write(value)
                 if doc.get("referenced_quote_no"):
                     st.caption(f"Document references quote: {doc['referenced_quote_no']}")
-                if doc.get("ocr_used"):
-                    st.caption(
-                        "⚡ This document had no text layer (a scan) and was read via OCR — "
-                        "double-check the extracted numbers carefully before comparing."
-                    )
                 if not doc["line_items"]:
                     st.caption("No line items were auto-detected — add rows manually below if needed.")
                 df = pd.DataFrame(
@@ -142,6 +139,11 @@ def render_editable_docs(docs, raw_bytes, section_label):
                     },
                 )
                 edited[name] = edited_df.to_dict("records")
+                if doc.get("ocr_used"):
+                    st.caption(
+                        "⚡ This document had no text layer (a scan) and was read via OCR — "
+                        "double-check the extracted numbers carefully before comparing."
+                    )
     return edited
 
 
@@ -260,19 +262,32 @@ st.caption(
     "scanned signed copies rely on OCR, so double-check these tables — edit any cell directly, "
     "or add/remove rows, before comparing."
 )
-review_col1, review_col2, review_col3 = st.columns(3)
-with review_col1:
-    st.markdown("#### Cactoz Quotes")
+st.html("""
+<style>
+.st-key-review_tabs [data-testid="stTab"] {
+    font-size: 1.15rem;
+    font-weight: 600;
+    padding: 0.75rem 1.5rem;
+}
+</style>
+""")
+tab1, tab2, tab3 = st.tabs(
+    [
+        ":material/request_quote: Cactoz Quotes",
+        ":material/mark_email_read: Customer quotes / POs",
+        ":material/local_shipping: Supplier POs",
+    ],
+    key="review_tabs",
+)
+with tab1:
     if not quote_docs:
         st.info("Upload Cactoz quote PDFs above.")
     edited_quote_items = render_editable_docs(quote_docs, quote_bytes, "quote") if quote_docs else {}
-with review_col2:
-    st.markdown("#### Customer quotes / POs")
+with tab2:
     if not customer_docs:
         st.info("Upload customer quote/PO PDFs above.")
     edited_customer_items = render_editable_docs(customer_docs, customer_bytes, "customer") if customer_docs else {}
-with review_col3:
-    st.markdown("#### Supplier POs")
+with tab3:
     if not supplier_docs:
         st.info("Upload supplier PO PDFs above.")
     edited_supplier_items = render_editable_docs(supplier_docs, supplier_bytes, "supplier") if supplier_docs else {}
