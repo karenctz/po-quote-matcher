@@ -10,10 +10,12 @@ from extractor import extract_any_document
 from matcher import compare_line_items, verdict
 from ocr import call_power_automate_ocr
 
-st.set_page_config(page_title="Compare Any 2 Quotes", layout="wide")
+st.set_page_config(page_title="Compare Any 2 Documents", layout="wide")
 
-if not check_password("Compare Any 2 Quotes"):
+if not check_password("Compare Any 2 Documents"):
     st.stop()
+
+st.page_link("app.py", label="← Back to menu", icon=":material/arrow_back:")
 
 
 def build_ocr_fallback():
@@ -38,12 +40,12 @@ def build_ocr_fallback():
     return _fallback
 
 
-st.title("Compare Any 2 Quotes")
+st.title("Compare Any 2 Documents")
 st.caption(
-    "Upload any two quotes — PDF, Excel/CSV, or an image/scanned document — and "
-    "compare item, part number, description, qty, and price side by side. "
-    "Unlike the main PO ↔ Customer ↔ Supplier workflow, this doesn't assume "
-    "either document is Cactoz's own template."
+    "Upload any two documents — quote, PO, or invoice, in PDF, Excel/CSV, or "
+    "an image/scanned format — and compare item, part number, description, "
+    "qty, and price side by side. Unlike the PO ↔ Customer Quote workflow, "
+    "this doesn't assume either document is Cactoz's own template."
 )
 
 ACCEPTED_TYPES = ["pdf", "xlsx", "xls", "csv", "png", "jpg", "jpeg", "tif", "tiff", "bmp"]
